@@ -1,0 +1,23 @@
+module default {
+
+type Message {
+    role: str;
+    body: str;
+    timestamp: datetime {
+        default := datetime_current();
+    }
+    multi sources: str;
+}
+
+type Chat {
+    multi messages: Message;
+}
+
+type User {
+    name: str {
+        constraint exclusive;
+    }
+    multi chats: Chat;
+}
+
+}
