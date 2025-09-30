@@ -9,6 +9,22 @@ from http import HTTPStatus
 
 from pydantic import BaseModel
 
+from .queries.get_chats_async_edgeql import get_chats as get_chats_query, GetChatsResult
+from .queries.get_chat_by_id_async_edgeql import (
+    get_chat_by_id as get_chat_by_id_query,
+    GetChatByIdResult,
+)
+from .queries.get_messages_async_edgeql import (
+    get_messages as get_messages_query,
+    GetMessagesResult,
+)
+from .queries.create_chat_async_edgeql import (
+    create_chat as create_chat_query,
+    CreateChatResult,
+)
+from .queries.add_message_async_edgeql import (
+    add_message as add_message_query,
+)
 from .queries.create_user_async_edgeql import (
     create_user as create_user_query,
     CreateUserResult,
@@ -83,6 +99,7 @@ def get_llm_completion(system_prompt: str, messages: list[dict[str, str]]) -> st
 
 async def generate_answer(
     query: str,
+    chat_history: list[GetMessagesResult],
     web_sources: list[WebSource],
 ) -> SearchResult:
     system_prompt = (
@@ -98,7 +115,12 @@ async def generate_answer(
         prompt += f"Result {i} (URL: {source.url}):\n"
         prompt += f"{source.text}\n\n"
 
-    messages = [{"text": prompt}]
+    # messages = [{"text": prompt}]
+    # messages = [{"role": "user", "content": prompt}]
+    messages = [
+    {"text": message.body} for message in chat_history
+    ]
+    messages.append({"text": prompt})
 
     llm_response = get_llm_completion(
         system_prompt=system_prompt,
@@ -133,6 +155,31 @@ async def get_users(
         return await get_users_query(gel_client)
 
 
+@app.get("/chats")
+async def get_chats(
+    username: str = Query(), chat_id: str = Query(None)
+) -> list[GetChatsResult] | GetChatByIdResult:
+    """List user's chats or get a chat by username and id"""
+    if chat_id:
+        chat = await get_chat_by_id_query(
+            gel_client, username=username, chat_id=chat_id
+        )
+        if not chat:
+            raise HTTPException(
+                HTTPStatus.NOT_FOUND,
+                detail={"error": f"Chat {chat_id} for user {username} does not exist."},
+            )
+        return chat
+    else:
+        return await get_chats_query(gel_client, username=username)
+
+
+@app.post("/chats", status_code=HTTPStatus.CREATED)
+async def post_chat(username: str) -> CreateChatResult:
+    return await create_chat_query(gel_client, username=username)
+
+
+
 @app.post("/users", status_code=HTTPStatus.CREATED)
 async def post_user(username: str = Query()) -> CreateUserResult:
     try:
@@ -144,11 +191,47 @@ async def post_user(username: str = Query()) -> CreateUserResult:
         )
 
 
-@app.post("/search")
-async def search(search_terms: SearchTerms) -> SearchResult:
-    web_sources = await search_web(search_terms.query)
-    search_result = await generate_answer(search_terms.query, web_sources)
+@app.get("/messages")
+async def get_messages(
+    username: str = Query(), chat_id: str = Query()
+) -> list[GetMessagesResult]:
+    """Fetch all messages from a chat"""
+    return await get_messages_query(gel_client, username=username, chat_id=chat_id)
+
+
+@app.post("/messages", status_code=HTTPStatus.CREATED)
+async def post_messages(
+    search_terms: SearchTerms,
+    username: str = Query(),
+    chat_id: str = Query(),
+) -> SearchResult:
+    chat_history = await get_messages_query(
+        gel_client, username=username, chat_id=chat_id
+    )
+
+    _ = await add_message_query(
+        gel_client,
+        username=username,
+        message_role="user",
+        message_body=search_terms.query,
+        sources=[],
+        chat_id=chat_id,
+    )
+
+    search_query = search_terms.query
+    web_sources = await search_web(search_query)
+
+    search_result = await generate_answer(
+        search_terms.query, chat_history, web_sources
+    )
+
+    _ = await add_message_query(
+        gel_client,
+        username=username,
+        message_role="assistant",
+        message_body=search_result.response,
+        sources=search_result.sources,
+        chat_id=chat_id,
+    )
+
     return search_result
-    # return SearchResult(
-    #     response=search_terms.query, sources=web_sources
-    # )
