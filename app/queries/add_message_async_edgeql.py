@@ -37,13 +37,13 @@ async def add_message(
     message_body: str,
     sources: list[str],
     chat_id: uuid.UUID,
-) -> AddMessageResult | None:
-    return await executor.query_single(
+) -> list[AddMessageResult]:
+    return await executor.query(
         """\
         with
             user := (select User filter .name = <str>$username),
         update Chat
-        filter .id = <uuid>$chat_id and .<chats[is User] = user
+        filter any(.id = <uuid>$chat_id and .<chats[is User] = user)
         set {
             messages := assert_distinct(.messages union (
                 insert Message {
