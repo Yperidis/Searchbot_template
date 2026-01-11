@@ -64,23 +64,37 @@ def get_llm_completion(system_prompt: str, messages: list[dict[str, str]]) -> st
     # The client gets the API key from the environment variable `GEMINI_API_KEY`.
     # client = genai.Client()
 
-    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
-    headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/"
+        "models/gemini-2.5-flash:generateContent"
+        )
+    headers = {
+        "Content-Type": "application/json", 
+        "x-goog-api-key": api_key
+        }
+
+    # Build Gemini-compatible contents
+    contents = []
+
+    for msg in messages:
+        contents.append({
+            "role": "user",
+            "parts": [{"text": msg["text"]}],
+        })
+
+    payload = {
+        "system_instruction": {
+            "parts": [{"text": system_prompt}]
+        },
+        "contents": contents,
+    }
 
     try:
         response = requests.post(
             url,
             headers=headers,
-            json={
-                "contents": [
-                    {
-                        "parts": [
-                            {"text": system_prompt},
-                            *messages
-                        ]
-                    }
-                ]
-            },
+            json=payload,
+            timeout=30,
         )
         response.raise_for_status()
         result = response.json()
@@ -89,6 +103,11 @@ def get_llm_completion(system_prompt: str, messages: list[dict[str, str]]) -> st
         else:
             print("No content generated or unexpected response structure.")
             print(result) # Print full response for debugging
+
+    except (KeyError, IndexError):
+        raise RuntimeError(
+            f"Unexpected Gemini response format:\n{response.text}"
+        )
 
     except requests.exceptions.RequestException as e:
         print(f"An error occurred: {e}")
@@ -115,12 +134,19 @@ async def generate_answer(
         prompt += f"Result {i} (URL: {source.url}):\n"
         prompt += f"{source.text}\n\n"
 
-    # messages = [{"text": prompt}]
-    # messages = [{"role": "user", "content": prompt}]
     messages = [
-    {"text": message.body} for message in chat_history
+        {
+            "role": "user" if message.role == "user" else "model",
+            "text": message.body,
+        }
+        for message in chat_history
     ]
-    messages.append({"text": prompt})
+    messages.append(
+        {
+    "role": "user",
+    "text": prompt,
+    }
+    )
 
     llm_response = get_llm_completion(
         system_prompt=system_prompt,
@@ -230,7 +256,7 @@ async def post_messages(
         username=username,
         message_role="assistant",
         message_body=search_result.response,
-        sources=search_result.sources,
+        sources=[source.url for source in search_result.sources],
         chat_id=chat_id,
     )
 
