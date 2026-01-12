@@ -47,6 +47,7 @@ class SearchTerms(BaseModel):
 
 class SearchResult(BaseModel):
     response: str | None = None
+    search_query: str | None = None
     sources: list[WebSource] | None = None
 
 
@@ -78,7 +79,7 @@ def get_llm_completion(system_prompt: str, messages: list[dict[str, str]]) -> st
 
     for msg in messages:
         contents.append({
-            "role": "user",
+            "role": msg["role"],
             "parts": [{"text": msg["text"]}],
         })
 
@@ -114,6 +115,32 @@ def get_llm_completion(system_prompt: str, messages: list[dict[str, str]]) -> st
         if hasattr(e, 'response') and e.response is not None:
             print(f"Response status code: {e.response.status_code}")
             print(f"Response body: {e.response.text}")
+
+
+async def generate_search_query(
+    query: str, message_history: list[GetMessagesResult]
+) -> str:
+    system_prompt = (
+        "You are a helpful assistant."
+        + " Your job is to extract a keyword search query"
+        + " from a chat between an AI and a human."
+        + " Make sure it's a single most relevant keyword to maximize matching."
+        + " Only provide the query itself as your response."
+    )
+
+    formatted_history = "\n---\n".join(
+        [
+            f"{message.role}: {message.body} (sources: {message.sources})"
+            for message in message_history
+        ]
+    )
+    prompt = f"Chat history: {formatted_history}\n\nUser message: {query} \n\n"
+
+    llm_response = get_llm_completion(
+        system_prompt=system_prompt, messages=[{"role": "user", "text": prompt}]
+    )
+
+    return llm_response
 
 
 async def generate_answer(
@@ -159,6 +186,7 @@ async def generate_answer(
     )
 
     return search_result
+
 
 @app.get("/")
 async def root():
@@ -231,10 +259,12 @@ async def post_messages(
     username: str = Query(),
     chat_id: str = Query(),
 ) -> SearchResult:
+    # 1. Fetch chat history
     chat_history = await get_messages_query(
         gel_client, username=username, chat_id=chat_id
     )
 
+    # 2. Add incoming message to Gel
     _ = await add_message_query(
         gel_client,
         username=username,
@@ -244,13 +274,19 @@ async def post_messages(
         chat_id=chat_id,
     )
 
-    search_query = search_terms.query
+    # 3. Generate a query and perform googling
+    search_query = await generate_search_query(search_terms.query, chat_history)
     web_sources = await search_web(search_query)
 
+    # 4. Generate answer
     search_result = await generate_answer(
         search_terms.query, chat_history, web_sources
     )
 
+    search_result.search_query = search_query  # add search query to the output
+                                               # to see what the bot is searching for
+
+    # 5. Add LLM response to Gel
     _ = await add_message_query(
         gel_client,
         username=username,
@@ -260,4 +296,5 @@ async def post_messages(
         chat_id=chat_id,
     )
 
+    # 6. Send result back to the client
     return search_result
